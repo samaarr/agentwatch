@@ -1,10 +1,10 @@
 """
-Data models faithful to the formal problem definition in:
-  George et al., "Unsupervised Cycle Detection in Agentic Applications", ICPE 2026
-  arXiv:2511.10650
+Data models for AgentWatch — kept close to the paper's notation so the
+code and the maths stay easy to cross-reference.
 
-A trajectory T = {s1, s2, ..., sn} is a collection of spans.
-Each span s_i = <trace_id, span_id, parent_span_id, op, input, output>
+George et al. define a trajectory as T = {s1, s2, ..., sn} where each
+span si = <trace_id, span_id, parent_span_id, op, input, output>.
+That's what the Span dataclass encodes.
 """
 
 from dataclasses import dataclass, field
@@ -14,32 +14,29 @@ import time
 
 
 class CycleType(str, Enum):
-    """
-    Failure taxonomy from Pathak et al. (ICPE 2026), arXiv:2511.04032
-    Trajectories are one of four types — only Error Cycle and Silent Cycle
-    are 'bad cycles' in the sense of George et al.
-    """
-    PRODUCTIVE = "productive"          # healthy, makes progress
-    REDUNDANT_STEP = "redundant_step"  # unnecessary steps but correct output
-    ERROR_CYCLE = "error_cycle"        # explicit structural loop / repeated failure
-    SILENT_CYCLE = "silent_cycle"      # semantically redundant — same output, different call
+    # Failure taxonomy from Pathak et al. (ICPE 2026), arXiv:2511.04032.
+    # The first two are healthy; the last two are what we're hunting.
+    PRODUCTIVE = "productive"          # agent makes progress, finishes cleanly
+    REDUNDANT_STEP = "redundant_step"  # extra steps, but correct output
+    ERROR_CYCLE = "error_cycle"        # structural loop — same tool sequence repeating
+    SILENT_CYCLE = "silent_cycle"      # different calls, same outputs — the sneaky one
 
 
 class DetectionMethod(str, Enum):
-    CDDAG = "cddag"       # Cycle Detection via DAG edge weights
-    CDCS = "cdcs"         # Cycle Detection via Call Stack subsequences
-    CDSA = "cdsa"         # Cycle Detection via Semantic Analysis
-    HYBRID = "hybrid"     # CDCS first, CDSA confirmation (paper's recommended approach)
+    CDDAG = "cddag"   # DAG edge weights
+    CDCS = "cdcs"     # call stack subsequence frequency
+    CDSA = "cdsa"     # cosine similarity between sibling spans
+    HYBRID = "hybrid" # CDCS + CDSA — what the paper actually recommends
 
 
 @dataclass
 class Span:
     """
-    Formal span definition from Section 2 of George et al.
-    s_i = <trace_id, span_id, parent_span_id, op, input, output>
+    One step in an agent's execution. Maps directly to the paper's formal
+    definition: si = <trace_id, span_id, parent_span_id, op, input, output>.
     """
     span_id: str
-    op: str                          # operation name, e.g. "web_search", "calculator"
+    op: str          # e.g. "web_search", "calculator", "llm_reasoning"
     input: str
     output: str
     trace_id: str = "default"
@@ -52,10 +49,10 @@ class Span:
 
 @dataclass
 class CycleAlert:
-    """Emitted when a bad cycle is detected in a trajectory."""
+    """Fired when the detector finds a bad cycle in a trajectory."""
     cycle_type: CycleType
     detection_method: DetectionMethod
-    confidence: float                # 0.0 - 1.0
+    confidence: float          # 0.0 - 1.0
     involved_span_ids: list[str]
     explanation: str
     recommended_action: str
@@ -73,10 +70,10 @@ class CycleAlert:
 
 @dataclass
 class TrajectoryResult:
-    """Full result for a single trajectory analysis."""
+    """What you get back after running analyse_trajectory()."""
     trace_id: str
-    label: CycleType              # final classification
-    is_bad_cycle: bool            # f(T) in paper: 1 = bad, 0 = healthy
+    label: CycleType    # f(T) in the paper: bad cycle or not
+    is_bad_cycle: bool
     alerts: list[CycleAlert]
     span_count: int
     method_used: DetectionMethod

@@ -1,19 +1,20 @@
 """
-Mock tools for the AgentWatch demo agent.
-Three tools, each configurable to simulate failure scenarios
-used in the benchmark test suite.
+Mock tools used by the demo agent. Each tool can be configured to behave
+normally or fail in a specific way, which is how we inject the failure
+scenarios for the benchmark.
+
+Nothing here makes real network calls — that keeps tests fast and costs zero.
 """
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 
 class ToolBehaviour(str, Enum):
-    NORMAL = "normal"          # returns useful results
-    EMPTY = "empty"            # always returns empty — triggers search loop
-    WRONG_TYPE = "wrong_type"  # returns wrong type — triggers calculator retry
-    CORRECT_NO_STOP = "correct_no_stop"  # returns correct answer but agent won't finish
+    NORMAL = "normal"
+    EMPTY = "empty"            # web_search returns nothing -> search loop
+    WRONG_TYPE = "wrong_type"  # calculator rejects input -> retry loop
+    CORRECT_NO_STOP = "correct_no_stop"
 
 
 @dataclass
@@ -32,13 +33,8 @@ class MockWebSearch:
         self.call_count += 1
 
         if self.behaviour == ToolBehaviour.EMPTY:
-            return ToolResult(
-                content="",
-                success=False,
-                tool_name="web_search",
-            )
+            return ToolResult(content="", success=False, tool_name="web_search")
 
-        # Normal: return plausible stock data
         return ToolResult(
             content=f"Search results for '{query}': Dublin population is approximately 1.4 million. Ireland total population is 5.1 million.",
             success=True,
@@ -63,17 +59,9 @@ class MockCalculator:
 
         try:
             result = eval(expression, {"__builtins__": {}})  # noqa: S307 — demo only
-            return ToolResult(
-                content=str(result),
-                success=True,
-                tool_name="calculator",
-            )
+            return ToolResult(content=str(result), success=True, tool_name="calculator")
         except Exception as e:
-            return ToolResult(
-                content=f"Calculation error: {e}",
-                success=False,
-                tool_name="calculator",
-            )
+            return ToolResult(content=f"Calculation error: {e}", success=False, tool_name="calculator")
 
 
 class MockMemoryStore:

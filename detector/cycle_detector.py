@@ -1,23 +1,24 @@
 """
-Cycle detector implementing the three methods from George et al. (ICPE 2026):
+The three detection methods from George et al. (ICPE 2026), plus the hybrid
+pipeline that combines them.
 
-  - CDDAG: Cycle Detection via DAG edge weight statistics
-  - CDCS:  Cycle Detection via Call Stack subsequence frequency
-  - CDSA:  Cycle Detection via Semantic (cosine) similarity of sibling spans
-  - Hybrid: CDCS first, CDSA confirmation — the paper's recommended approach
+Quick reference on what each method is actually good at:
+  CDDAG  — catches explicit repeated edges in the DAG. Low precision on its own
+           (paper F1: 0.08) because a single busy parent looks like a cycle.
+  CDCS   — sliding window over the op sequence. Good at structural loops like
+           [web_search -> llm_reasoning] repeating four times.
+  CDSA   — cosine similarity between sibling span outputs. The only method that
+           catches silent cycles, where the agent tries different things but
+           keeps getting the same result. (paper F1 alone: 0.28)
+  Hybrid — run CDCS and CDSA in parallel, use CDDAG as a tiebreaker.
+           Paper F1: 0.72 (precision 0.62, recall 0.86).
 
-Paper benchmark (on 1575 stock market trajectories):
-  CDDAG alone:  F1 = 0.08
-  CDSA alone:   F1 = 0.28
-  Hybrid:       F1 = 0.72  (precision 0.62, recall 0.86)
-
-Tunable parameters (paper notation preserved):
-  m  — CDDAG threshold multiplier  (default 2.0)
-  k  — CDCS threshold multiplier   (default 2.0)
-  phi — CDSA cosine similarity threshold (default 0.92)
+Parameters follow the paper's notation:
+  m   — CDDAG threshold multiplier (default 2.0)
+  k   — CDCS threshold multiplier  (default 2.0)
+  phi — CDSA cosine similarity cutoff (default 0.92)
 """
 
-import math
 import statistics
 from collections import defaultdict
 from typing import Optional
@@ -28,10 +29,8 @@ from .models import (
 from .pattern_store import PatternStore
 
 
-# ---------------------------------------------------------------------------
-# Optional: sentence-transformers for CDSA (offline, runs on M2)
-# Falls back to simple Jaccard similarity if not installed.
-# ---------------------------------------------------------------------------
+# sentence-transformers runs offline on M2 via MPS — preferred for CDSA.
+# If it's not installed, Jaccard overlap is a reasonable fallback for testing.
 try:
     from sentence_transformers import SentenceTransformer, util as st_util
     _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
@@ -42,17 +41,11 @@ except ImportError:
 
 
 def _cosine_similarity(text_a: str, text_b: str) -> float:
-    """
-    Compute cosine similarity between two output strings.
-    Uses sentence-transformers if available (recommended),
-    falls back to Jaccard overlap on word sets.
-    """
     if _MODEL is not None:
         emb_a = _MODEL.encode(text_a, convert_to_tensor=True)
         emb_b = _MODEL.encode(text_b, convert_to_tensor=True)
         return float(st_util.cos_sim(emb_a, emb_b)[0][0])
     else:
-        # Jaccard fallback — less accurate but zero dependencies
         set_a = set(text_a.lower().split())
         set_b = set(text_b.lower().split())
         if not set_a or not set_b:
@@ -60,17 +53,13 @@ def _cosine_similarity(text_a: str, text_b: str) -> float:
         return len(set_a & set_b) / len(set_a | set_b)
 
 
-# ---------------------------------------------------------------------------
-# CDDAG — Cycle Detection via DAG edge weights
-# ---------------------------------------------------------------------------
-
 def detect_cddag(store: PatternStore, m: float = 2.0) -> Optional[CycleAlert]:
     """
-    Section 2.1, George et al.:
-    Flag edge e as cyclic if w(e) > mu + m * sigma.
+    Flag edge e as cyclic if w(e) > mu + m * sigma (Section 2.1).
 
-    Note: paper shows F1=0.08 for this alone. Included for completeness
-    and as first stage in hybrid pipeline.
+    Works well when an agent genuinely hammers the same parent->child path.
+    Less useful in shallow single-agent trees where most edges appear once —
+    the variance is too low to distinguish a real loop from normal branching.
     """
     weights = list(store.get_edge_weights().values())
     if len(weights) < 2:
@@ -103,20 +92,16 @@ def detect_cddag(store: PatternStore, m: float = 2.0) -> Optional[CycleAlert]:
         explanation=(
             f"DAG edge weight {max_w:.1f} exceeds threshold {threshold:.2f} "
             f"(mu={mu:.2f}, sigma={sigma:.2f}, m={m}). "
-            f"Agent repeatedly traversed the same parent→child path."
+            f"Agent repeatedly traversed the same parent->child path."
         ),
-        recommended_action="INTERRUPT: Break the loop and re-prompt with explicit termination condition.",
+        recommended_action="INTERRUPT: re-prompt with an explicit termination condition.",
     )
 
 
-# ---------------------------------------------------------------------------
-# CDCS — Cycle Detection via Call Stack subsequence frequency
-# ---------------------------------------------------------------------------
-
 def _get_subsequences(sequence: list[str], min_len: int = 2) -> dict[tuple, int]:
     """
-    Sliding window over op sequence to count all contiguous subsequences.
-    Uses tuple of op names as key (paper uses op field for structural identity).
+    Count all contiguous subsequences of length >= min_len.
+    Keys are tuples of op names — structure only, no content.
     """
     freq: dict[tuple, int] = defaultdict(int)
     n = len(sequence)
@@ -129,8 +114,11 @@ def _get_subsequences(sequence: list[str], min_len: int = 2) -> dict[tuple, int]
 
 def detect_cdcs(store: PatternStore, k: float = 2.0) -> Optional[CycleAlert]:
     """
-    Section 2.1, George et al.:
-    Flag subsequence S as cyclic if w(S) > mu + k * sigma.
+    Flag subsequence S as cyclic if w(S) > mu + k * sigma (Section 2.1).
+
+    This is the workhorse for error cycles. If an agent is stuck rephrasing
+    a query and retrying, you'll see ['llm_reasoning', 'web_search'] show up
+    three or four times with a frequency well above the mean.
     """
     op_seq = store.get_op_sequence()
     if len(op_seq) < 4:
@@ -156,7 +144,6 @@ def detect_cdcs(store: PatternStore, k: float = 2.0) -> Optional[CycleAlert]:
     worst_count = cyclic_subseqs[worst]
     confidence = min(1.0, (worst_count - threshold) / (threshold + 1e-9))
 
-    # Find span_ids involved in the repeating subsequence
     call_stack = store.get_call_stack()
     ops = [s.op for s in call_stack]
     involved_ids = []
@@ -174,21 +161,18 @@ def detect_cdcs(store: PatternStore, k: float = 2.0) -> Optional[CycleAlert]:
             f"Call stack pattern {list(worst)} repeated {worst_count}x "
             f"(threshold {threshold:.2f}). Agent is looping over the same tool sequence."
         ),
-        recommended_action="INTERRUPT: Detected structural loop in tool call sequence. Inject stop condition.",
+        recommended_action="INTERRUPT: structural loop detected. Inject a stop condition or clear the agent's context.",
     )
 
 
-# ---------------------------------------------------------------------------
-# CDSA — Cycle Detection via Semantic Similarity of sibling spans
-# ---------------------------------------------------------------------------
-
 def detect_cdsa(store: PatternStore, phi: float = 0.92) -> Optional[CycleAlert]:
     """
-    Section 2.1, George et al.:
-    Check cosine similarity between sibling node outputs.
-    Flag if cos(v_i, v_j) > phi for any sibling pair.
+    Flag sibling spans as a silent cycle if cos(vi, vj) > phi (Section 2.1).
 
-    Paper restricts to sibling nodes (same parent) to reduce O(n^2) → O(log(n)^2).
+    Silent cycles are harder to catch than error cycles because the op sequence
+    looks fine — the agent is trying different things. But the outputs are
+    nearly identical, which means it's not making progress. Restricting to
+    siblings (same parent in the DAG) keeps this from being O(n^2).
     """
     pairs = store.get_all_sibling_pairs()
     if not pairs:
@@ -218,13 +202,9 @@ def detect_cdsa(store: PatternStore, phi: float = 0.92) -> Optional[CycleAlert]:
             f"have output similarity {best_sim:.3f} > phi={phi}. "
             f"Agent is regenerating semantically identical content."
         ),
-        recommended_action="INTERRUPT: Silent cycle — agent is producing redundant outputs. Check if earlier result was consumed.",
+        recommended_action="INTERRUPT: silent cycle — check whether an earlier result was actually consumed.",
     )
 
-
-# ---------------------------------------------------------------------------
-# Hybrid detector — paper's recommended approach
-# ---------------------------------------------------------------------------
 
 def detect_hybrid(
     store: PatternStore,
@@ -233,36 +213,26 @@ def detect_hybrid(
     phi: float = 0.92,
 ) -> TrajectoryResult:
     """
-    Hybrid approach from Section 2.1:
-    1. Run CDCS (call stack structural analysis)
-    2. If structural cycle found, confirm with CDSA
-    3. Also run CDDAG independently
+    Run all three methods and merge results.
 
-    Returns a TrajectoryResult with full classification.
+    CDCS and CDSA run independently — CDDAG is only added when CDCS doesn't
+    fire, to avoid double-counting the same loop. Silent cycle takes priority
+    in the final label because it's harder to detect and more expensive when
+    missed (token cost accumulates invisibly).
     """
     alerts: list[CycleAlert] = []
 
-    # Stage 1: structural detection via call stack
     cdcs_alert = detect_cdcs(store, k=k)
-
-    # Stage 2: semantic confirmation (only if structural cycle suspected,
-    # or run independently to catch silent cycles structural methods miss)
     cdsa_alert = detect_cdsa(store, phi=phi)
-
-    # Stage 3: DAG structural check (lower precision, catches explicit repeats)
     cddag_alert = detect_cddag(store, m=m)
 
-    # Collect all alerts
     if cdcs_alert:
         alerts.append(cdcs_alert)
     if cdsa_alert:
         alerts.append(cdsa_alert)
-    if cddag_alert:
-        # Only add CDDAG if it found something the others didn't
-        if not cdcs_alert:
-            alerts.append(cddag_alert)
+    if cddag_alert and not cdcs_alert:
+        alerts.append(cddag_alert)
 
-    # Determine final label
     if not alerts:
         label = CycleType.PRODUCTIVE
         is_bad = False
@@ -273,7 +243,6 @@ def detect_hybrid(
         label = CycleType.ERROR_CYCLE
         is_bad = True
 
-    # Determine trace_id from spans
     call_stack = store.get_call_stack()
     trace_id = call_stack[0].trace_id if call_stack else "unknown"
 
@@ -287,10 +256,6 @@ def detect_hybrid(
     )
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
 def analyse_trajectory(
     spans: list[Span],
     method: DetectionMethod = DetectionMethod.HYBRID,
@@ -299,18 +264,12 @@ def analyse_trajectory(
     phi: float = 0.92,
 ) -> TrajectoryResult:
     """
-    Main entry point. Takes a completed trajectory (list of Span),
-    builds internal representations, runs detection.
+    Main entry point. Pass in a completed list of spans, get back a
+    TrajectoryResult with a label and any alerts.
 
-    Args:
-        spans:  All spans in the trajectory
-        method: Which detection method to use (default: HYBRID)
-        m:      CDDAG threshold multiplier
-        k:      CDCS threshold multiplier
-        phi:    CDSA cosine similarity threshold
-
-    Returns:
-        TrajectoryResult with label, is_bad_cycle flag, and alerts
+    Use method=HYBRID in production. The single-method options (CDDAG, CDCS,
+    CDSA) are useful for benchmarking individual methods against each other,
+    which is how the paper's Table 2 numbers were generated.
     """
     store = PatternStore()
     for span in spans:
@@ -319,7 +278,6 @@ def analyse_trajectory(
     if method == DetectionMethod.HYBRID:
         return detect_hybrid(store, m=m, k=k, phi=phi)
 
-    # Single-method runs (for benchmarking individual methods)
     trace_id = spans[0].trace_id if spans else "unknown"
     alert = None
 
