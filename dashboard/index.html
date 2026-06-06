@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentWatch — Cycle Detection Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg:        #0a0c0f;
+    --surface:   #111418;
+    --border:    #1e2329;
+    --border-hi: #2d3340;
+    --text:      #c9d1d9;
+    --muted:     #586069;
+    --accent:    #58a6ff;
+    --green:     #3fb950;
+    --red:       #f85149;
+    --orange:    #d29922;
+    --purple:    #bc8cff;
+    --mono:      'IBM Plex Mono', monospace;
+    --sans:      'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    min-height: 100vh;
+  }
+
+  /* Header */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--surface);
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: -0.3px;
+  }
+
+  .logo span { color: var(--muted); font-weight: 400; }
+
+  .paper-ref {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    border: 1px solid var(--border-hi);
+    padding: 3px 8px;
+    border-radius: 2px;
+    margin-left: auto;
+  }
+
+  /* Layout */
+  .main { display: grid; grid-template-columns: 300px 1fr; height: calc(100vh - 49px); }
+
+  /* Sidebar */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-section {
+    border-bottom: 1px solid var(--border);
+    padding: 16px;
+  }
+
+  .section-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .form-group { margin-bottom: 10px; }
+  .form-group label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+
+  select, input[type="text"], input[type="number"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    padding: 6px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    border-radius: 2px;
+    outline: none;
+  }
+
+  select:focus, input:focus { border-color: var(--accent); }
+
+  .run-btn {
+    width: 100%;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    padding: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: 2px;
+    margin-top: 4px;
+    transition: opacity 0.15s;
+  }
+
+  .run-btn:hover { opacity: 0.85; }
+  .run-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .run-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+
+  .run-item {
+    padding: 10px 16px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.1s;
+  }
+
+  .run-item:hover { background: var(--surface); }
+  .run-item.active { border-left-color: var(--accent); background: var(--surface); }
+
+  .run-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3px;
+  }
+
+  .run-id { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  .badge-green  { background: rgba(63,185,80,.15);  color: var(--green); }
+  .badge-red    { background: rgba(248,81,73,.15);  color: var(--red); }
+  .badge-orange { background: rgba(210,153,34,.15); color: var(--orange); }
+  .badge-purple { background: rgba(188,140,255,.15);color: var(--purple); }
+
+  .run-meta { font-size: 10px; color: var(--muted); }
+
+  /* Main panel */
+  .panel { overflow-y: auto; padding: 20px 24px; }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60%;
+    color: var(--muted);
+    gap: 8px;
+  }
+
+  .empty-state .icon { font-size: 32px; opacity: 0.3; }
+  .empty-state p { font-family: var(--mono); font-size: 12px; }
+
+  /* Summary cards */
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+    border-radius: 3px;
+  }
+
+  .card-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+  .card-value { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .card-value.bad { color: var(--red); }
+  .card-value.good { color: var(--green); }
+  .card-value.neutral { color: var(--accent); }
+
+  /* Section header */
+  .section-header {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    margin-bottom: 14px;
+    margin-top: 20px;
+  }
+
+  .section-header:first-of-type { margin-top: 0; }
+
+  /* Alerts */
+  .alert-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    border-left: 3px solid var(--red);
+  }
+
+  .alert-card.silent { border-left-color: var(--orange); }
+  .alert-card.productive { border-left-color: var(--green); }
+
+  .alert-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .alert-title { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+
+  .alert-body { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.6; }
+
+  .alert-action {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--orange);
+    background: rgba(210,153,34,.08);
+    padding: 6px 10px;
+    border-radius: 2px;
+    border: 1px solid rgba(210,153,34,.2);
+  }
+
+  .confidence-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 10px;
+    overflow: hidden;
+  }
+
+  .confidence-fill {
+    height: 100%;
+    background: var(--red);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  .confidence-fill.silent { background: var(--orange); }
+
+  /* Span timeline */
+  .span-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .span-row:last-child { border-bottom: none; }
+
+  .span-op {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    min-width: 140px;
+    flex-shrink: 0;
+  }
+
+  .span-op.root    { color: var(--purple); }
+  .span-op.tool    { color: var(--green); }
+  .span-op.flagged { color: var(--red); }
+
+  .span-output {
+    color: var(--muted);
+    flex: 1;
+    line-height: 1.5;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .span-depth { color: var(--border-hi); font-size: 10px; font-family: var(--mono); min-width: 20px; }
+
+  /* Chart */
+  .chart-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px;
+    height: 200px;
+    position: relative;
+  }
+
+  /* Loading */
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .status-bar {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    padding: 6px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    bottom: 0;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">AgentWatch <span>/ cycle detector</span></div>
+  <div class="paper-ref">George et al. ICPE 2026 · arXiv:2511.10650</div>
+</header>
+
+<div class="main">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="section-label">Run Agent</div>
+
+      <div class="form-group">
+        <label>Scenario</label>
+        <select id="scenario">
+          <option value="productive">Productive (healthy)</option>
+          <option value="error_cycle">Error Cycle (search loop)</option>
+          <option value="silent_cycle">Silent Cycle (calc retry)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>phi — CDSA similarity threshold</label>
+        <input type="number" id="phi" value="0.92" min="0" max="1" step="0.01">
+      </div>
+
+      <div class="form-group">
+        <label>k — CDCS multiplier</label>
+        <input type="number" id="k_val" value="2.0" min="0.1" step="0.1">
+      </div>
+
+      <button class="run-btn" id="runBtn" onclick="runAgent()">▶ Run</button>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Runs</div>
+    </div>
+
+    <div class="run-list" id="runList">
+      <div style="padding:16px;color:var(--muted);font-size:11px;font-family:var(--mono)">
+        No runs yet.
+      </div>
+    </div>
+
+    <div class="status-bar" id="statusBar">Ready</div>
+  </div>
+
+  <!-- Main panel -->
+  <div class="panel" id="panel">
+    <div class="empty-state">
+      <div class="icon">⬡</div>
+      <p>Select a scenario and click Run</p>
+      <p style="font-size:10px;margin-top:4px">Implements George et al. hybrid detection: CDCS + CDSA</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+let runs = [];
+let activeRunId = null;
+let simChart = null;
+
+async function runAgent() {
+  const btn = document.getElementById('runBtn');
+  const status = document.getElementById('statusBar');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Running agent...';
+  status.textContent = 'Executing agent trajectory...';
+
+  const scenario = document.getElementById('scenario').value;
+  const phi = parseFloat(document.getElementById('phi').value);
+  const k = parseFloat(document.getElementById('k_val').value);
+
+  try {
+    const res = await fetch(`${API}/run`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ scenario, phi, k }),
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+    const run = await res.json();
+
+    // Fetch full trace
+    const traceRes = await fetch(`${API}/traces/${run.run_id}`);
+    const trace = await traceRes.json();
+
+    runs.unshift({ ...run, trace });
+    renderRunList();
+    showRun(run.run_id);
+    status.textContent = `Run ${run.run_id} complete — ${run.label}`;
+  } catch (e) {
+    status.textContent = `Error: ${e.message}. Is the API running?`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '▶ Run';
+  }
+}
+
+function renderRunList() {
+  const list = document.getElementById('runList');
+  if (runs.length === 0) {
+    list.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:11px;font-family:var(--mono)">No runs yet.</div>';
+    return;
+  }
+  list.innerHTML = runs.map(r => `
+    <div class="run-item ${r.run_id === activeRunId ? 'active' : ''}" onclick="showRun('${r.run_id}')">
+      <div class="run-item-header">
+        <span class="run-id">${r.run_id}</span>
+        <span class="badge ${labelBadge(r.label)}">${r.label}</span>
+      </div>
+      <div class="run-meta">${r.trace?.scenario || r.scenario || 'unknown'} · ${r.span_count} spans · ${r.alert_count} alert${r.alert_count !== 1 ? 's' : ''}</div>
+    </div>
+  `).join('');
+}
+
+function labelBadge(label) {
+  if (label === 'productive') return 'badge-green';
+  if (label === 'silent_cycle') return 'badge-orange';
+  if (label === 'error_cycle') return 'badge-red';
+  return 'badge-purple';
+}
+
+function showRun(runId) {
+  activeRunId = runId;
+  renderRunList();
+  const run = runs.find(r => r.run_id === runId);
+  if (!run) return;
+  const trace = run.trace;
+  const result = trace.analysis;
+
+  const panel = document.getElementById('panel');
+
+  // Build flagged span IDs set
+  const flaggedIds = new Set(
+    (result.alerts || []).flatMap(a => a.involved_span_ids)
+  );
+
+  // Similarity data for chart (approximate: use output length variance as proxy)
+  const spans = trace.spans || [];
+  const simData = spans.map((s, i) => {
+    if (i === 0) return null;
+    const prev = spans[i - 1];
+    const sim = jaccardSim(s.output, prev.output);
+    return { x: i, y: sim, op: s.op };
+  }).filter(Boolean);
+
+  panel.innerHTML = `
+    <div class="section-header">Summary</div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">Label</div>
+        <div class="card-value ${result.is_bad_cycle ? 'bad' : 'good'}" style="font-size:16px;margin-top:2px">
+          ${result.label.replace('_', ' ')}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Spans</div>
+        <div class="card-value neutral">${result.span_count}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Alerts</div>
+        <div class="card-value ${result.alerts.length > 0 ? 'bad' : 'good'}">${result.alerts.length}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Method</div>
+        <div class="card-value neutral" style="font-size:14px;margin-top:2px">${result.method_used}</div>
+      </div>
+    </div>
+
+    ${result.alerts.length > 0 ? `
+      <div class="section-header">Detected Cycles</div>
+      ${result.alerts.map(a => `
+        <div class="alert-card ${a.cycle_type === 'silent_cycle' ? 'silent' : ''}">
+          <div class="alert-header">
+            <span class="badge ${a.cycle_type === 'silent_cycle' ? 'badge-orange' : 'badge-red'}">
+              ${a.cycle_type.replace('_', ' ')}
+            </span>
+            <span class="alert-title">${a.detection_method.toUpperCase()}</span>
+            <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)">
+              confidence ${(a.confidence * 100).toFixed(0)}%
+            </span>
+          </div>
+          <div class="alert-body">${a.explanation}</div>
+          <div class="alert-action">⚡ ${a.recommended_action}</div>
+          <div class="confidence-bar">
+            <div class="confidence-fill ${a.cycle_type === 'silent_cycle' ? 'silent' : ''}"
+                 style="width:${(a.confidence*100).toFixed(0)}%"></div>
+          </div>
+        </div>
+      `).join('')}
+    ` : `
+      <div class="section-header">Status</div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--green);
+                  padding:14px 16px;border-radius:3px;font-size:12px;color:var(--muted)">
+        ✓ No cycles detected. Trajectory is productive.
+      </div>
+    `}
+
+    <div class="section-header" style="margin-top:20px">Output Similarity Over Steps</div>
+    <div class="chart-wrap">
+      <canvas id="simChart"></canvas>
+    </div>
+
+    <div class="section-header" style="margin-top:20px">Span Trace (${spans.length} spans)</div>
+    <div>
+      ${spans.map(s => `
+        <div class="span-row">
+          <span class="span-depth">${s.parent_span_id ? '└' : '●'}</span>
+          <span class="span-op ${spanClass(s.op, flaggedIds.has(s.span_id))}">${s.op}</span>
+          <span class="span-output">${s.output || '—'}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  // Render similarity chart
+  if (simChart) simChart.destroy();
+  const ctx = document.getElementById('simChart').getContext('2d');
+  simChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: simData.map(d => d.op),
+      datasets: [{
+        label: 'Output similarity to prev span',
+        data: simData.map(d => d.y),
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88,166,255,0.06)',
+        borderWidth: 1.5,
+        pointRadius: 3,
+        pointBackgroundColor: simData.map(d => d.y > 0.8 ? '#f85149' : '#58a6ff'),
+        tension: 0.3,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#586069', font: { family: 'IBM Plex Mono', size: 9 } }, grid: { color: '#1e2329' } },
+        y: { min: 0, max: 1, ticks: { color: '#586069', font: { family: 'IBM Plex Mono', size: 9 } }, grid: { color: '#1e2329' } }
+      },
+      annotation: {
+        annotations: {
+          threshold: {
+            type: 'line',
+            yMin: 0.92, yMax: 0.92,
+            borderColor: '#f85149',
+            borderWidth: 1,
+            borderDash: [4, 4],
+          }
+        }
+      }
+    }
+  });
+}
+
+function spanClass(op, flagged) {
+  if (flagged) return 'flagged';
+  if (op === 'agent_run') return 'root';
+  if (['web_search','calculator','memory_store_write','memory_store_read'].includes(op)) return 'tool';
+  return '';
+}
+
+function jaccardSim(a, b) {
+  if (!a || !b) return 0;
+  const sa = new Set(a.toLowerCase().split(/\s+/));
+  const sb = new Set(b.toLowerCase().split(/\s+/));
+  const inter = [...sa].filter(x => sb.has(x)).length;
+  const union = new Set([...sa, ...sb]).size;
+  return union === 0 ? 0 : inter / union;
+}
+</script>
+
+</body>
+</html>
