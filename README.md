@@ -159,7 +159,7 @@ agentwatch/
 ├── ARCHITECTURE.md     Design decisions and ADRs
 └── README.md           This file
 ```
-
+![AgentWatch dashboard](docs/dashboard.png)
 ---
 
 ## References
